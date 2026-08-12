@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Web Agent</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="popup">
+    <h1>Local Web Agent</h1>
+
+    <section>
+      <div class="row"><span>Server</span><strong id="server">Disconnected</strong></div>
+      <div class="row"><span>Project</span><strong id="project">Unknown</strong></div>
+      <div class="row"><span>Logs</span><strong id="logs">Unknown</strong></div>
+      <div class="row"><span>Current</span><strong id="current">None</strong></div>
+      <div class="row"><span>Last result</span><strong id="lastResult">None</strong></div>
+    </section>
+
+    <section class="settings">
+      <label for="token">Server token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="Token">
+
+      <label for="mode">Mode</label>
+      <select id="mode">
+        <option value="manual">Manual</option>
+        <option value="auto">Auto</option>
+      </select>
+
+      <button id="save">Save & connect</button>
+    </section>
+
+    <p id="error" class="error"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

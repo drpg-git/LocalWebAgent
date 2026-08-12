@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-web-agent"
+version = "1.0.0"
+description = "Local bridge between an AI coding assistant, Chrome Extension and a local project"
+requires-python = ">=3.10"
+dependencies = ["aiohttp>=3.9,<4"]
+
+[project.scripts]
+lwa = "cli.lwa:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
