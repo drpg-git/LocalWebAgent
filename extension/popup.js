@@ -25,7 +25,8 @@ async function refresh() {
   }
 
   try {
-    const url = `${state.server.replace(/^ws/, "http")}/status`;
+    const statusBase = state.server.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
+    const url = `${statusBase}/status`;
     const result = await fetch(url, { signal: AbortSignal.timeout(1500) });
     if (result.ok) {
       const data = await result.json();

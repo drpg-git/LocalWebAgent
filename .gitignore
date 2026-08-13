@@ -1,0 +1,5 @@
+.venv/
+local_agent_server.py
+.local_agent.log
+__pycache__/
+*.zip
