@@ -85,7 +85,10 @@ class LocalWebAgentServer:
         except AuthenticationError:
             return web.json_response({"ok": False, "error": "UNAUTHORIZED"}, status=401)
 
-        websocket = web.WebSocketResponse(heartbeat=30)
+        websocket = web.WebSocketResponse(
+            heartbeat=30,
+            compress=False
+        )
         await websocket.prepare(request)
         await self.connections.add(websocket)
 

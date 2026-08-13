@@ -21,19 +21,28 @@
   }
 
   function findComposer() {
+    // ChatGPT рендерит composer внутри <form>. Ищем сначала там, чтобы не
+    // подхватить постороннее textarea/contenteditable в другом месте
+    // страницы (сайдбар, модалки, поиск и т.п.).
+    const scopes = [...document.querySelectorAll("form")];
+    scopes.push(document);
+
     const selectors = [
+      "#prompt-textarea",
       "textarea",
       "div[contenteditable='true'][role='textbox']",
       "div[contenteditable='true']"
     ];
 
-    for (const selector of selectors) {
-      const elements = [...document.querySelectorAll(selector)];
-      const visible = elements.find((element) => {
-        const rect = element.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && !element.closest("[hidden]");
-      });
-      if (visible) return visible;
+    for (const scope of scopes) {
+      for (const selector of selectors) {
+        const elements = [...scope.querySelectorAll(selector)];
+        const visible = elements.find((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && !element.closest("[hidden]");
+        });
+        if (visible) return visible;
+      }
     }
 
     return null;
@@ -64,25 +73,39 @@
     const range = document.createRange();
     range.selectNodeContents(element);
     range.collapse(false);
-
     selection.removeAllRanges();
     selection.addRange(range);
 
     const existing = element.textContent?.trim();
     const prefix = existing ? "\n\n" : "";
-    const node = document.createTextNode(`${prefix}${text}`);
+    const payload = `${prefix}${text}`;
 
-    range.insertNode(node);
-    range.collapse(false);
+    // Composer в ChatGPT — контролируемый React-компонент. Ручная вставка
+    // текстового узла через Range API меняет DOM, но не проходит через
+    // обработчики ввода, которые React использует для синхронизации своего
+    // internal state — из-за этого composer "ломается": курсор скачет,
+    // ввод перестаёт работать, React перерисовывает поле поверх вставки.
+    // document.execCommand('insertText', ...) идёт через тот же нативный
+    // input pipeline, что и обычная печать/paste, поэтому React видит
+    // событие как настоящий ввод и синхронизируется корректно.
+    const usedExecCommand =
+      typeof document.execCommand === "function" &&
+      document.execCommand("insertText", false, payload);
 
-    selection.removeAllRanges();
-    selection.addRange(range);
+    if (!usedExecCommand) {
+      // Фолбэк на случай, если execCommand недоступен/заблокирован.
+      const node = document.createTextNode(payload);
+      range.insertNode(node);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
 
-    element.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      inputType: "insertText",
-      data: text
-    }));
+      element.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: payload
+      }));
+    }
   }
 
   function insertResult(message, tool) {
@@ -108,7 +131,9 @@
 
     await new Promise((resolve) => setTimeout(resolve, 150));
 
-    const buttons = [...document.querySelectorAll("button")];
+    const composerForSend = findComposer();
+    const searchScope = composerForSend?.closest("form") || document;
+    const buttons = [...searchScope.querySelectorAll("button")];
     const sendButton = buttons.find((button) => {
       const label = `${button.getAttribute("aria-label") || ""} ${button.textContent || ""}`.toLowerCase();
       return /send|отправ/.test(label) && !button.disabled;
@@ -129,10 +154,26 @@
     }
   }
 
+  const MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
+
   function getAssistantMessages() {
-    return Array.from(
-      document.querySelectorAll('[data-message-author-role="assistant"]')
-    );
+    return Array.from(document.querySelectorAll(MESSAGE_SELECTOR));
+  }
+
+  // Находит ближайший узел сообщения ассистента для произвольного узла,
+  // задетого мутацией (сам узел, его предок или один из потомков).
+  function closestAssistantMessage(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      node = node.parentElement;
+    }
+    if (!(node instanceof Element)) return [];
+
+    const direct = node.closest(MESSAGE_SELECTOR);
+    if (direct) return [direct];
+
+    // Мутация могла произойти выше по дереву (например, добавился целый
+    // блок сообщения) — тогда ищем сообщения среди потомков.
+    return Array.from(node.querySelectorAll?.(MESSAGE_SELECTOR) || []);
   }
 
   function extractBalancedJson(text, startIndex) {
@@ -233,59 +274,70 @@
   }
 
   function normalizeToolRequest(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return null;
-    }
-
-    if (typeof value.request_id !== "string" || !value.request_id.trim()) {
-      return null;
-    }
-
-    if (typeof value.tool !== "string" || !value.tool.trim()) {
-      return null;
-    }
-
-    if (
-      value.args !== undefined &&
-      (!value.args || typeof value.args !== "object" || Array.isArray(value.args))
-    ) {
-      return null;
-    }
-
-    return {
-      request_id: value.request_id.trim(),
-      tool: value.tool.trim(),
-      args: value.args && typeof value.args === "object" ? value.args : {}
-    };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
+
+  if (typeof value.tool !== "string" || !value.tool.trim()) {
+    return null;
+  }
+
+  if (
+    value.args !== undefined &&
+    (!value.args || typeof value.args !== "object" || Array.isArray(value.args))
+  ) {
+    return null;
+  }
+
+  return {
+    request_id:
+      typeof value.request_id === "string" && value.request_id.trim()
+        ? value.request_id.trim()
+        : crypto.randomUUID(),
+    tool: value.tool.trim(),
+    args:
+      value.args && typeof value.args === "object"
+        ? value.args
+        : {}
+  };
+}
 
   function extractToolRequests(text) {
-    const requests = [];
-    const seen = new Set();
+  const requests = [];
+  const seen = new Set();
 
-    for (const block of extractJsonBlocks(text)) {
-      let value;
+  for (const block of extractJsonBlocks(text)) {
+    let value;
 
-      try {
-        value = JSON.parse(block.text);
-      } catch {
-        continue;
-      }
-
-      const candidates = Array.isArray(value) ? value : [value];
-
-      for (const candidate of candidates) {
-        const request = normalizeToolRequest(candidate);
-        if (!request) continue;
-
-        if (seen.has(request.request_id)) continue;
-        seen.add(request.request_id);
-        requests.push(request);
-      }
+    try {
+      value = JSON.parse(block.text);
+    } catch {
+      continue;
     }
 
-    return requests;
+    let candidates;
+
+    if (Array.isArray(value)) {
+      candidates = value;
+    } else if (Array.isArray(value.tool_requests)) {
+      candidates = value.tool_requests;
+    } else {
+      candidates = [value];
+    }
+
+    for (const candidate of candidates) {
+      const request = normalizeToolRequest(candidate);
+      if (!request) continue;
+
+      if (seen.has(request.request_id)) continue;
+
+      seen.add(request.request_id);
+      requests.push(request);
+    }
   }
+
+  return requests;
+}
 
   async function forwardToolRequest(request) {
     if (processedRequests.has(request.request_id)) {
@@ -338,18 +390,32 @@
     }
   }
 
+  // Полное сканирование всех сообщений — только для первого запуска
+  // (нужно подхватить уже отрендеренный диалог). После этого работаем
+  // точечно по мутациям, см. pendingMessages ниже.
   async function scanAll() {
     const messages = getAssistantMessages();
-
     for (const node of messages) {
       await processAssistantMessage(node);
     }
   }
 
-  function scheduleScan() {
+  const pendingMessages = new Set();
+
+  async function flushPending() {
+    const nodes = [...pendingMessages];
+    pendingMessages.clear();
+
+    for (const node of nodes) {
+      if (!node.isConnected) continue;
+      await processAssistantMessage(node);
+    }
+  }
+
+  function scheduleFlush() {
     clearTimeout(scanTimer);
     scanTimer = setTimeout(() => {
-      scanAll().catch((error) => {
+      flushPending().catch((error) => {
         console.error(LOG_PREFIX, "DOM scan failed:", error);
       });
     }, 300);
@@ -365,11 +431,44 @@
     }
   });
 
-  const observer = new MutationObserver(() => {
-    scheduleScan();
+  // Раньше observer слушал весь document.documentElement и на любую мутацию
+  // (включая посторонние — печать в других полях, анимации, стриминг
+  // текста где угодно на странице) перечитывал innerText ВСЕХ сообщений
+  // ассистента заново. innerText вызывает forced layout reflow, поэтому на
+  // длинном диалоге это давало постоянные пересчёты layout — отсюда
+  // подтормаживание интерфейса. Теперь собираем из mutation records только
+  // реально задетые узлы сообщений и обрабатываем точечно.
+  const observer = new MutationObserver((mutations) => {
+    let touched = false;
+
+    for (const mutation of mutations) {
+      if (mutation.type === "childList") {
+        for (const node of mutation.addedNodes) {
+          for (const message of closestAssistantMessage(node)) {
+            pendingMessages.add(message);
+            touched = true;
+          }
+        }
+      } else if (mutation.type === "characterData") {
+        for (const message of closestAssistantMessage(mutation.target)) {
+          pendingMessages.add(message);
+          touched = true;
+        }
+      }
+    }
+
+    if (touched) scheduleFlush();
   });
 
-  observer.observe(document.documentElement, {
+  // Наблюдаем не за всем документом, а за контейнером диалога, если его
+  // удаётся найти — это дополнительно сокращает число нерелевантных
+  // мутаций, которые вообще долетают до callback'а.
+  const conversationRoot =
+    document.querySelector('[data-message-author-role="assistant"]')?.closest("main") ||
+    document.querySelector("main") ||
+    document.documentElement;
+
+  observer.observe(conversationRoot, {
     subtree: true,
     childList: true,
     characterData: true
@@ -380,5 +479,7 @@
   }).catch(() => {});
 
   log("Content script started");
-  scheduleScan();
+  scanAll().catch((error) => {
+    console.error(LOG_PREFIX, "Initial scan failed:", error);
+  });
 })();
